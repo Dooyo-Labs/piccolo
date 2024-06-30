@@ -11,6 +11,8 @@ use crate::{
 };
 
 pub fn load_base<'gc>(ctx: Context<'gc>) {
+    ctx.set_global("_G", ctx.globals());
+
     ctx.set_global(
         "tonumber",
         Callback::from_fn(&ctx, |ctx, _, mut stack| {
