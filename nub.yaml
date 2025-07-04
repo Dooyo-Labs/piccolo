@@ -1,0 +1,22 @@
+workspace:
+  name: piccolo
+  repos:
+    - name: piccolo
+      path: .
+
+prompt:
+  docs:
+    rust:
+      - name: gc-arena
+        version: 0.5.3
+        git-url: https://github.com/kyren/gc-arena
+        git-commit: 5a7534b883b703f23cfb8c3cfdf033460aa77ea9
+
+tests:
+  - name: Build
+    command: cargo build --workspace
+  - name: Test
+    command: cargo test --workspace -- --nocapture
+    env:
+      RUST_BACKTRACE: 1
+      RUST_LOG: trace
