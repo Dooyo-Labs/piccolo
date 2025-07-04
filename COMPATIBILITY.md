@@ -92,7 +92,7 @@ likely not be implemented due to differences between piccolo and PUC-Lua.
 | 🔵   | `byte(s[, i, j])`                 |             |       |
 | 🔵   | `char(args...)`                   |             |       |
 | ⚫️️   | `dump(function[, strip])`         |             |       |
-| ⚫️️   | `find(s, pattern[, init, plain])` |             |       |
+| 🟡   | `find(s, pattern[, init, plain])` | Does not implement pattern matching, only plain substring search |       |
 | ⚫️️   | `format(formatstring, args...)`   |             |       |
 | ⚫️️   | `gmatch(s, pattern[, init])`      |             |       |
 | ⚫️️   | `gsub(s, pattern, repl[, n])`     |             |       |

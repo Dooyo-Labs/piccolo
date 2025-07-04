@@ -1,4 +1,4 @@
-use crate::{Callback, CallbackReturn, Context, FromValue, String, Table, Value};
+use crate::{Callback, CallbackReturn, Context, FromValue, IntoValue as _, String, Table, Value};
 
 mod format;
 
@@ -39,6 +39,50 @@ pub fn load_string<'gc>(ctx: Context<'gc>) {
                     .collect::<Result<Vec<_>, _>>()?,
             );
             stack.replace(ctx, string);
+            Ok(CallbackReturn::Return)
+        }),
+    );
+
+    string.set_field(
+        ctx,
+        "find",
+        Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (s, pattern, init, plain) =
+                stack.consume::<(String, String, Option<i64>, Option<bool>)>(ctx)?;
+
+            let plain = plain.unwrap_or_default();
+            if !plain && is_special_pattern(pattern.as_bytes()) {
+                return Err("TODO: Implement find() pattern matching"
+                    .into_value(ctx)
+                    .into());
+            }
+
+            let s_bytes = s.as_bytes();
+            let pattern_bytes = pattern.as_bytes();
+
+            let start_pos = rel_pos_to_index(init.unwrap_or(1), s_bytes.len());
+
+            if start_pos >= s_bytes.len() || (s_bytes.len() - start_pos) < pattern_bytes.len() {
+                stack.replace(ctx, Value::Nil);
+                return Ok(CallbackReturn::Return);
+            }
+
+            if pattern_bytes.is_empty() {
+                stack.replace(ctx, (start_pos as i64 + 1, start_pos as i64));
+                return Ok(CallbackReturn::Return);
+            }
+
+            if let Some(pos) = s_bytes[start_pos..]
+                .windows(pattern_bytes.len())
+                .position(|window| window == pattern_bytes)
+            {
+                let start = start_pos + pos + 1;
+                let end = start_pos + pos + pattern_bytes.len();
+                stack.replace(ctx, (start as i64, end as i64));
+            } else {
+                stack.replace(ctx, Value::Nil);
+            }
+
             Ok(CallbackReturn::Return)
         }),
     );
@@ -111,6 +155,26 @@ pub fn load_string<'gc>(ctx: Context<'gc>) {
         .unwrap();
 
     ctx.set_global("string", string);
+}
+
+/// Converts base-1 string position, (where negative values count from the end of the string),
+/// to a base-0 index.
+///
+/// Like PUC-Lua, an out-of-bounds position of 0 is an alias for 1
+/// Like PUC-Lua, it clamps negative offsets to the start of the string
+///
+/// Note: This does _not_ clamp the index to the string length.
+fn rel_pos_to_index(pos: i64, len: usize) -> usize {
+    match pos {
+        pos if pos > 0 => pos.saturating_sub(1).try_into().unwrap_or(usize::MAX),
+        0 => 0,
+        pos => len.saturating_sub(pos.unsigned_abs().try_into().unwrap_or(usize::MAX)),
+    }
+}
+
+fn is_special_pattern(pattern: &[u8]) -> bool {
+    const SPECIAL_BYTES: &[u8] = b"^$*+?.([%-";
+    pattern.iter().any(|&b| SPECIAL_BYTES.contains(&b))
 }
 
 fn sub(string: &[u8], i: i64, j: Option<i64>) -> Result<&[u8], std::num::TryFromIntError> {
