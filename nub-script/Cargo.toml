@@ -1,0 +1,19 @@
+[package]
+name = "nub-script"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+piccolo = { path = "../" }
+futures-util = "0.3"
+thiserror = "1.0"
+log = "0.4"
+anyhow = "1.0"
+gc-arena = { workspace = true }
+tokio = { version = "1.45", features = ["full"] }
+env_logger = "0.11"
+
+[dev-dependencies]
+test-log = "0.2"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
