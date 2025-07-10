@@ -10,7 +10,8 @@ use crate::{
     finalizers::Finalizers,
     stash::{Fetchable, Stashable},
     stdlib::{
-        load_base, load_coroutine, load_debug, load_io, load_load_text, load_math, load_string, load_table,
+        load_base, load_coroutine, load_debug, load_io, load_load_text, load_math, load_string,
+        load_table,
     },
     string::InternedStringSet,
     thread::BadThreadMode,
