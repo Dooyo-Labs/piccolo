@@ -24,8 +24,10 @@ pub enum ScriptError {
     #[error("pattern not found:\n-- Before Context (found={before_found}) --\n{before_context}\n-- After Context --\n{after_context}\n")]
     PatternNotFound {
         before_context: String,
+        select_context: String,
         after_context: String,
         before_found: bool,
+        select_found: bool,
     },
     #[error("Inconsistent patch state: {0}")]
     BadPatch(String),
@@ -288,6 +290,64 @@ fn load_nub_script<'gc>(ctx: piccolo::Context<'gc>) {
     let patcher_methods = Table::new(&ctx);
     patcher_methods.set_field(
         ctx,
+        "select_next_lines",
+        Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (patcher_ud, lines): (UserData, Table) = stack.consume(ctx)?;
+            let mut patcher = patcher_ud
+                .downcast_static::<RefCell<TextPatcher>>()?
+                .borrow_mut();
+            let mut before = vec![];
+            let mut select = vec![];
+            let mut after = vec![];
+            for (_k, line) in lines {
+                let Value::Table(ref line) = line else {
+                    return Err(ScriptError::BadString(
+                        "Lines table must contain tables with 'B', 'S', or 'A' keys".to_string(),
+                    )
+                    .into());
+                };
+
+                let code = match line.get_value(ctx, 1).into_string(ctx) {
+                    Some(s) => s.to_str().map_err(|_e| {
+                        ScriptError::BadString("Invalid key in lines table".to_string())
+                    })?,
+                    None => {
+                        return Err(ScriptError::BadString(
+                            "Key in lines table must be a string".to_string(),
+                        )
+                        .into());
+                    }
+                };
+                let value = match line.get_value(ctx, 2).into_string(ctx) {
+                    Some(s) => s.to_str().map_err(|_e| {
+                        ScriptError::BadString("Invalid value in lines table".to_string())
+                    })?,
+                    None => {
+                        return Err(ScriptError::BadString(
+                            "Value in lines table must be a string".to_string(),
+                        )
+                        .into());
+                    }
+                };
+                match code {
+                    "B" => before.push(value),
+                    "S" => select.push(value),
+                    "A" => after.push(value),
+                    _ => {
+                        return Err(ScriptError::BadString(format!(
+                            "Unknown key in lines table: {code}"
+                        ))
+                        .into());
+                    }
+                }
+            }
+            patcher.move_to_context(&before, &select, &after, true)?;
+            stack.replace(ctx, patcher_ud);
+            Ok(CallbackReturn::Return)
+        }),
+    );
+    patcher_methods.set_field(
+        ctx,
         "move_forward_to_context",
         Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (patcher_ud, before, after): (
@@ -312,7 +372,18 @@ fn load_nub_script<'gc>(ctx: piccolo::Context<'gc>) {
                 })
                 .transpose()?
                 .unwrap_or_default();
-            patcher.move_to_context(before, after)?;
+
+            let before_lines: Vec<_> = if before == "" {
+                vec![]
+            } else {
+                before.lines().collect()
+            };
+            let after_lines: Vec<_> = if after == "" {
+                vec![]
+            } else {
+                after.lines().collect()
+            };
+            patcher.move_to_context(&before_lines, &[], &after_lines, false)?;
             stack.replace(ctx, patcher_ud);
             Ok(CallbackReturn::Return)
         }),
@@ -527,20 +598,11 @@ impl TextPatcher {
 
     fn move_to_context(
         &mut self,
-        before_context: &str,
-        after_context: &str,
+        before_lines: &[&str],
+        select_lines: &[&str],
+        after_lines: &[&str],
+        with_selection: bool,
     ) -> Result<(), ScriptError> {
-        let before_lines: Vec<_> = if before_context == "" {
-            vec![]
-        } else {
-            before_context.lines().collect()
-        };
-        let after_lines: Vec<_> = if after_context == "" {
-            vec![]
-        } else {
-            after_context.lines().collect()
-        };
-
         log::trace!(
             "Looking for context, before: {:?}, after: {:?}",
             before_lines,
@@ -556,43 +618,56 @@ impl TextPatcher {
 
         if self.original_lines.len() < pattern_len + search_start_line {
             return Err(ScriptError::PatternNotFound {
-                before_context: before_context.to_string(),
-                after_context: after_context.to_string(),
+                before_context: before_lines.join("\n"),
+                select_context: select_lines.join("\n"),
+                after_context: after_lines.join("\n"),
                 before_found: false,
+                select_found: false,
             });
         }
 
         let mut before_found = false;
+        let mut select_found = false;
 
         let search_lines = &self.original_lines[search_start_line..];
         for (i, window) in search_lines
-            .windows(before_lines.len() + after_lines.len())
+            .windows(before_lines.len() + select_lines.len() + after_lines.len())
             .enumerate()
         {
             //log::trace!("checking window {i}: {window:?}");
-            if window[..before_lines.len()] == before_lines {
+            if window[..before_lines.len()] == *before_lines {
                 before_found = true;
             } else {
                 continue;
             }
-
-            if window[before_lines.len()..] != after_lines {
+            if window[before_lines.len()..before_lines.len() + select_lines.len()] == *select_lines
+            {
+                select_found = true;
+            } else {
+                continue;
+            }
+            if window[before_lines.len() + select_lines.len()..] != *after_lines {
                 continue;
             }
 
-            let cursor = search_start_line + i + before_lines.len();
-            self.cursor = cursor;
-            log::trace!("Updated cursor to {cursor}");
-            //self.selection = (self.selection.1, cursor);
-            //log::trace!("Updated selection: {:?}", self.selection);
+            let sel_start = search_start_line + i + before_lines.len();
+            let sel_end = search_start_line + i + before_lines.len() + select_lines.len();
+            self.cursor = sel_end;
+            log::trace!("Updated cursor to {sel_end}");
+            if with_selection {
+                self.selection = (sel_start, sel_end);
+                log::trace!("Updated selection: {:?}", self.selection);
+            }
 
             return Ok(());
         }
 
         Err(ScriptError::PatternNotFound {
-            before_context: before_context.to_string(),
-            after_context: after_context.to_string(),
+            before_context: before_lines.join("\n"),
+            select_context: select_lines.join("\n"),
+            after_context: after_lines.join("\n"),
             before_found,
+            select_found,
         })
     }
 

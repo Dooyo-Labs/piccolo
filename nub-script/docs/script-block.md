@@ -224,68 +224,10 @@ Patches are built sequentially and can not overlap.
 
 Internally the TextPatcher tracks:
 
-1. The latest cursor position (a position in-between two lines): Updated via `:move_forward_to_context()`
+1. The latest cursor position (a position in-between two lines): Updated via `:select_next_lines_context()`
 2. An active selection: Updated via `:start_selection_empty()` and `:end_selection()`
 
 The cursor can only move forwards, forcing you to build non-overlapping, in-order patches.
-
-### Grounding Comments
-
-To help reduce mistakes, it is strongly recommended to write a grounding comment that quotes the existing chunk of text being changed, with `-- >8 --` scissor marks to mark the lines being replaced, like:
-
-```lua
--- PATCH: Replace print to say "Hello, world!"
---
--- Optional longer description that may span over multiple lines to
--- describe this patch
---
--- -- BEGIN --
--- #!/usr/bin/env python3
---
--- def main():
--- -- >8 --
---     print("Hello!")
--- -- >8 --
---
--- if __name__ == "__main__":
---     main()
--- -- END --
-patcher:move_forward_to_context(
--- BEGIN --
-[[
-#!/usr/bin/env python3
-
-def main():
-]]
--- >8 -- Move cursor in front of print statement
-[[
-    print("Hello!")
-
-    if __name__ == "__main__":
-]]
-)
-patcher:start_selection_empty()
-
-patcher:move_forward_to_context(
-[[
-def main():
-    print("Hello!")
-]]
--- >8 -- Move cursor after print statement
-[[
-
-    if __name__ == "__main__":
-        main()
-]]
-)
-patcher:end_selection()
-patcher:replace_selected([[
-    print("Hello, world")
-]])
--- END --
-```
-
-The scissor marks should help make the boundaries for before and after context clearer before making calls to `:move_forward_to_context()`. The First call to `:move_forward_to_context()` should look at the first `-- >8 --` scissor mark, and the second call to `:move_forward_co_context()` should look at the second `-- >8 --` scissor mark.
 
 ### `TextPatcher.new(content)`
 Creates a new `TextPatcher` with the initial content to be modified.
@@ -298,90 +240,58 @@ The new TextPatcher has an empty selection positioned at the top of the content,
 - **Returns**: A new `TextPatcher` object.
 
 
-### `TextPatcher:move_forward_to_context(before_context, after_context)`
+### `TextPatcher:select_next_lines(context)`
 
-Moves the cursor forwards from the current position by searching for context.
+Moves the cursor forwards from the current position by searching for the given context lines, where each line is tagged as `B` (before), `S` (selection) or `A` (after), like:
 
-Splits the `before_context` and `after_context` strings into lines and then concatenates those to create one sequence of lines to match in the input.
+```lua
+patcher:select_next_lines( {
+    {"B", "Before context 1"}, -- Before context, to disambiguate which lines we are selecting
+    {"B", "Before context 2"},
+    {"B", "Before context 3"},
+    {"S", "Selection line 1"}, -- Selection lines to delete or replace
+    {"S", "Selection line 2"},
+    {"A", "After context 1"}, -- After context, to disambiguate which lines we are selecting
+    {"A", "After context 2"},
+    {"A", "After context 3"},
+})
+```
 
-If the combined sequences of lines are found (they must be found in the input without a gap) then the cursor is moved forwards to be in between the `before_context` lines and `after_context` lines.
+IMPORTANT: All lines must be a verbatim sequence of lines in the input content with no gaps.
 
-This is designed so that you can use lots of unambiguous surrounding context to uniquely position the cursor.
+IMPORTANT: Remember to escape characters in the line if needed, to maintain valid Lua string literals.
 
-IMPORTANT: Always aim to include three or more lines of context before and after the position you want to move the cursor to (six lines in total).
+- The 'B' lines must be a verbatim copy of some lines that come before the selection lines you want to edit.
+- Skip the 'B' lines if you need to make an edit at the start of the content.
+- The 'S' lines must be a verbatim copy of all the lines you want to delete or replace from the input context.
+- There must be no 'S' lines if you want to insert new text without deleting any old text
+- The 'A' lines must be verbatim copy of some lines that come after the selection you want to edit
+- Skip the 'A' lines if you need to make an edit at the end of the content.
 
-The `before_context` and `after_context` lines must appear back-to-back in the input content for the cursor to move!
+This is designed so that you can use lots of unambiguous surrounding context to uniquely identify the lines to select.
 
-The `before_context` and `after_context` are used to uniquely identify the location but are not part of the cursor or selection itself. It is recommended to use at least three lines of context where possible.
-
-The cursor is logically positioned on an invisible, empty line between `before_context` and `after_context`.
-
-IMPORTANT: The cursor can only move forwards!
-
-IMPORTANT: This API does not affect the current selection, you must use `:start_selection_empty()` and `:end_selection()` to select text in sync with the cursor.
+IMPORTANT: You must include three or more lines of 'B' context before the 'S' lines, unless you are editing at the start of the content.
+IMPORTANT: You must include three or more lines of 'A' context after the 'S' lines, unless you are editing at the end of the content.
+IMPORTANT: The 'S', selection lines can not overlap with any previous selection lines
 
 IMPORTANT: Consider the hierarchy of the input content when making large movements:
 - Aim to move to the nearest top-level item (such as a header or class definition or function name) before moving forwards to more-specific context.
 
-- **`before_context`** (string): A multi-line string that must appear before the cursor position, or `nil` to match the start of the file
-- **`after_context`** (string): A multi-line string that must appear after the cursor position, or `nil` to match the end of the file
-- **Returns**: The `TextPatcher` object, allowing for method chaining. Errors if the `before_context` lines, followed by the `after_context` lines, are not found in the input.
+- **`lines`** (table): A multi-line table that must uniquely identify the next selection lines you want to edit
+- **Returns**: The `TextPatcher` object, allowing for method chaining. Errors if the lines, are not all found in the input.
 
+#### Example
 
-#### Example & Coding Style
-
-You should use `[[` and `]]` to quote the context lines and place the quotes on their own lines to avoid issues with leading or trailing whitespace and make it easy to review patches.
-
-Remember that Lua will automatically swallow any newline after a `[[` open quote, and a trailing newline is optional for the last line, so these are equivalent:
+Replace a print statement so it says "Hello, world!"
 
 ```lua
-a = [[
-one line
-]]
-b = [[
-one line]]
-c = [[one line]]
-```
-
-The Lua string should end with two new lines if you want context that ends with a blank line, e.g.:
-
-```lua
-[[
-line 1
-line 2
-
-]]
-```
-
-will split into three lines like `["line 1", "line 2", ""]`
-
-
-You should add a `--- Move the cursor <comment>` between the context to highlight the new position for the cursor, E.g.
-
-```lua
-patcher:move_forward_to_context(
-[[
-def some_function:
-]]
--- >8 -- Move the cursor in front of the print statement
-[[
-    print("Hello")
-]]
-)
-patcher:start_selection_empty()
-
-cursor1 = patcher:move_forward_to_context(
-[[
-def some_function:
-    print("Hello")
-]]
--- >8 -- Move the cursor to after the print statement
-[[
-
-def some other_function:
-]]
-)
-patcher:end_selection()
+patcher:select_next_lines({
+    {"B", ""},
+    {"B", "def some_function():"},
+    {"S", "    print(\"Hello\")"},
+    {"A", ""},
+    {"A", "def some_other_function:"},
+})
 
 patcher:replace_selected(
 [[
@@ -390,27 +300,8 @@ patcher:replace_selected(
 )
 ```
 
-### `TextPatcher:start_selection_empty()`
-
-Moves the start _AND_ end of the selection to the current cursor position, creating an empty selection that can be used to insert text at the cursor position without replacing any input lines.
-
-- **Returns**: The `TextPatcher` object, allowing for method chaining.
-
-If you call `:replace_selected()` after calling `:start_selection_empty()` that will result in inserting new lines at the current cursor position without affecting the surrounding lines.
-
-### `TextPatcher:end_selection()`
-
-Extend the selection by moving the end of the selection to the current cursor position.
-
-This enables you to select input lines with two cursor movements, where you call `:start_selection_empty()` after the first move, and then call `:end_selection()` after a second cursor movement.
-
-- **Returns**: The `TextPatcher` object, allowing for method chaining.
-
-You can then call `:replace_selected()` to replace the lines selected between the first call to `start_selection_empty()` and the second call to `:end_selection()`
-
-
 ### `TextPatcher:replace_selected(replacement)`
-Stages a patch that will replace the currently selected lines with the `replacement` lines.
+Stages a patch that will replace the currently selected 'S' lines with the `replacement` lines.
 
 "\n" represents one blank line.
 
@@ -425,9 +316,39 @@ Note: the input text is not modified on-the-fly, the patches are are recorded in
 - **`replacement`** (string): The text to insert.
 - **Returns**: The `TextPatcher` object for further chaining.
 
+### Coding Style
+
+You should use `[[` and `]]` to quote the replacement or insertions lines and place the quotes on their own lines to avoid issues with leading or trailing whitespace and make it easy to review patches.
+
+Remember that Lua will automatically swallow any newline after a `[[` open quote, and a trailing newline is optional for the last line, so these are equivalent:
+
+```lua
+patcher:replace_selected(
+[[
+one line
+]]
+)
+
+patcher:replace_selected(
+[[
+one line]]
+)
+
+patcher:replace_selected([[one line]])
+```
+
+The Lua string should end with two new lines if you want context that ends with a blank line, e.g.:
+
+```lua
+patcher:replace_selected[[
+line 1
+line 2
+
+]]
+```
 
 ### `TextPatcher:delete_selected(replacement)`
-Stages a patch that will delete the currently selected lines.
+Stages a patch that will delete the currently selected, 'S' lines.
 
 - **Returns**: The `TextPatcher` object for further chaining.
 
@@ -465,6 +386,8 @@ local patcher = TextPatcher.new(original_script)
 -- Directly replacing this empty selection will insert content at the start.
 patcher:replace_selected(
 [[
+#!/usr/bin/env python3
+
 # This is a new header comment.
 # It's added at the very beginning of the file.
 
@@ -482,6 +405,8 @@ return response
 
 **Resulting `script.py`:**
 ```python
+#!/usr/bin/env python3
+
 # This is a new header comment.
 # It's added at the very beginning of the file.
 
@@ -502,6 +427,8 @@ namespace: {{ example_namespace1 }}
 ==== BEGIN "script.py" ==== {{marker}}
 #!/usr/bin/env python3
 
+# This is an example python script
+
 def say_hello():
     print("Hello!")
 
@@ -517,31 +444,16 @@ if __name__ == "__main__":
 local original_script = get_data_block("{{ example_namespace1 }}", "script.py")
 local patcher = TextPatcher.new(original_script)
 
-patcher:move_forward_to_context(
-[[
-def say_hello():
-]],
--- >8 -- Move the cursor to the start of the `print` line
-[[
-    print("Hello!")
-
-def main():
-]]
-)
-patcher:start_selection_empty() -- Start a selection we can extend
-
-patcher:move_forward_to_context(
-[[
-def say_hello():
-    print("Hello!")
-]],
--- >8 -- Move the cursor after the `print` statement
-[[
-
-def main():
-]]
-)
-patcher:end_selection() -- Extend selection to include the print statement
+-- Select the print statement we want to replace, and provide surrounding before/after context
+patcher:select_next_lines({
+    {"B", "# This is an example python script"},
+    {"B", ""},
+    {"B", "def say_hello():"},
+    {"S", "    print(\"Hello\")"},
+    {"A", ""},
+    {"A", "def main():"},
+    {"A", "    say_hello()"},
+})
 
 patcher:replace_selected(
 [[
@@ -562,8 +474,81 @@ return response
 ```python
 #!/usr/bin/env python3
 
+# This is an example python script
+
 def say_hello():
     print("Hello, world!")
+
+def main():
+    say_hello()
+
+if __name__ == "__main__":
+    main()
+```
+
+### Example: Inserting a comment without replacing any lines
+This example demonstrates how to add a comment to a Python script, without deleting or replacing any existing lines
+
+**Original, input `script.py` block:**
+
+==== HEADER "script.py" ==== {{marker}}
+namespace: {{ example_namespace0 }}
+==== BEGIN "script.py" ==== {{marker}}
+#!/usr/bin/env python3
+
+# This is an example python script
+
+def say_hello():
+    print("Hello!")
+
+def main():
+    say_hello()
+
+if __name__ == "__main__":
+    main()
+==== END "hello.py" ==== {{marker}}
+
+**SCRIPT block:**
+
+```lua
+local original_script = get_data_block("{{ example_namespace0 }}", "script.py")
+local patcher = TextPatcher.new(original_script)
+
+-- Provide surrounding before/after context around the position we want to insert new text
+patcher:select_next_lines({
+    {"B", ""},
+    {"B", "# This is an example python script"},
+    {"B", ""},
+    -- No 'S' lines; empty selection marks insertion position
+    {"A", "def say_hello():"},
+    {"A", "    print(\"Hello!\")"},
+    {"A", ""},
+})
+-- Replace the empty selection to insert new text
+patcher:replace_selected(
+[[
+# This function prints "Hello!"
+]]
+)
+
+local new_script = patcher:apply()
+local commit = Commit.new("{{ example_namespace0 }}")
+commit:write_file("script.py", new_script, { mode = "0755" })
+commit:set_message([[Patch script.py to add a comment']])
+local response = Response.new("CHANGE")
+response:add_commit(commit)
+return response
+```
+
+**Resulting `script.py`:**
+```python
+#!/usr/bin/env python3
+
+# This is an example python script
+
+# This function prints "Hello!"
+def say_hello():
+    print("Hello!")
 
 def main():
     say_hello()

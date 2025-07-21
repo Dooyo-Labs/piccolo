@@ -53,7 +53,7 @@ if __name__ == "__main__":
 }
 
 #[test(tokio::test)]
-async fn test_accurate_patching() -> Result<()> {
+async fn test_accurate_patching_by_cursor() -> Result<()> {
     const INPUT_BLOCK: &str = r#"-- line 1
 -- line 2
 -- line 3
@@ -205,6 +205,113 @@ return response
 }
 
 #[test(tokio::test)]
+async fn test_accurate_patching() -> Result<()> {
+    const INPUT_BLOCK: &str = r#"-- line 1
+-- line 2
+-- line 3
+-- line 4
+-- line 5
+-- line 6
+-- line 7
+-- line 8
+-- line 9
+-- remove me
+-- remove me
+-- line 10
+-- remove me
+"#;
+
+    const SCRIPT: &str = r#"
+local patcher = TextPatcher.new(get_data_block("repo.namespace", "lines.txt"))
+
+patcher:replace_selected([[
+-- line 0
+]])
+
+patcher:select_next_lines(
+{
+    {"B", "-- line 4"},
+    {"B", "-- line 5"},
+    {"S", "-- line 6"},
+    {"A", "-- line 7"},
+    {"A", "-- line 8"},
+})
+
+patcher:replace_selected([[
+-- line 6
+-- line 6.5
+]])
+
+patcher:select_next_lines(
+{
+    {"B", "-- line 9"},
+    {"S", "-- remove me"},
+    {"S", "-- remove me"},
+    {"A", "-- line 10"},
+})
+
+-- Delete the 'remove me' lines
+patcher:replace_selected("")
+
+patcher:select_next_lines(
+{
+    {"B", "-- line 10"},
+    {"S", "-- remove me"},
+})
+
+-- Delete the 'remove me' line at the end of the file
+patcher:delete_selected()
+
+
+local new_content = patcher:apply()
+
+local response = Response.new("CHANGE")
+local commit = Commit.new("repo.namespace")
+commit:write_file("lines.txt", new_content)
+commit:set_message("Apply text manipulations")
+response:add_commit(commit)
+return response
+"#;
+
+    let mut nub = NubScript::default();
+    nub.add_data_block_content("repo.namespace", "lines.txt", INPUT_BLOCK);
+
+    let response: Response = match nub
+        .eval(SCRIPT, || async { ControlFlow::Continue(()) })
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("Error during evaluation: {:#}", e);
+            return Err(e.into());
+        }
+    };
+    let Response::Change { commits } = response else {
+        panic!("Expected a Change response, got: {:?}", response);
+    };
+    let commit = &commits[0];
+    let change = &commit.files_created[0];
+    println!("Final content:\n{}", change.content);
+    const EXPECTED_OUTPUT: &str = r#"-- line 0
+-- line 1
+-- line 2
+-- line 3
+-- line 4
+-- line 5
+-- line 6
+-- line 6.5
+-- line 7
+-- line 8
+-- line 9
+-- line 10
+"#;
+
+    assert_eq!(change.content, EXPECTED_OUTPUT);
+
+    Ok(())
+}
+
+#[test(tokio::test)]
 async fn test_pattern_not_found() {
     const SOURCE_RS: &str = "fn main() {}";
     const SCRIPT: &str = r#"
@@ -228,13 +335,17 @@ async fn test_pattern_not_found() {
             if let Some(nub_err) = re.downcast::<ScriptError>() {
                 if let ScriptError::PatternNotFound {
                     before_context,
+                    select_context,
                     after_context,
                     before_found,
+                    select_found,
                 } = nub_err
                 {
                     assert_eq!(before_context, "foo");
+                    assert_eq!(select_context, "");
                     assert_eq!(after_context, "baz");
                     assert!(!before_found);
+                    assert!(!select_found);
                     return;
                 }
             }
