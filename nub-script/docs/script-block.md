@@ -222,17 +222,12 @@ TextPatcher is line-oriented in how it patches content, so it can only be used t
 
 Patches are built sequentially and can not overlap.
 
-Internally the TextPatcher tracks:
+Internally the TextPatcher tracks one active selection: Updated via `:select_next_lines()`
 
-1. The latest cursor position (a position in-between two lines): Updated via `:select_next_lines_context()`
-2. An active selection: Updated via `:start_selection_empty()` and `:end_selection()`
-
-The cursor can only move forwards, forcing you to build non-overlapping, in-order patches.
+Each call to `:select_next_lines()` makes a new selection that comes after the previous selection.
 
 ### `TextPatcher.new(content)`
-Creates a new `TextPatcher` with the initial content to be modified.
-
-The new TextPatcher has the cursor positioned in-front of the first line.
+Creates a new `TextPatcher` with the initial content that will be patched.
 
 The new TextPatcher has an empty selection positioned at the top of the content, which can be replaced to insert text at the start of the content.
 
@@ -240,11 +235,42 @@ The new TextPatcher has an empty selection positioned at the top of the content,
 - **Returns**: A new `TextPatcher` object.
 
 
-### `TextPatcher:select_next_lines(context)`
+### `TextPatcher:select_next_lines(tagged_lines)`
 
-Moves the cursor forwards from the current position by searching for the given context lines, where each line is tagged as `B` (before), `S` (selection) or `A` (after), like:
+Moves the selection forwards by searching for a quoted sequence of existing lines, where each line is tagged as `B` (before), `S` (selection) or `A` (after).
+
+For an input file with the following contents:
+
+```
+Unrelated content
+Unrelated content
+Before context 1
+Before context 2
+Before context 3
+Selection line 1
+Selection line 2
+After context 1
+After context 2
+After context 3
+Unrelated content
+Unrelated content
+```
+
+Here is an example of how a sequence of input lines might be tagged, including a grounding comment:
 
 ```lua
+-- PATCH: Select some example lines from this chunk
+--
+-- ```
+-- Before context 1
+-- Before context 2
+-- Before context 3
+-- Selection line 1
+-- Selection line 2
+-- After context 1
+-- After context 2
+-- After context 3
+-- ```
 patcher:select_next_lines( {
     {"B", "Before context 1"}, -- Before context, to disambiguate which lines we are selecting
     {"B", "Before context 2"},
@@ -257,34 +283,49 @@ patcher:select_next_lines( {
 })
 ```
 
-IMPORTANT: All lines must be a verbatim sequence of lines in the input content with no gaps.
+### Tags:
 
-IMPORTANT: Remember to escape characters in the line if needed, to maintain valid Lua string literals.
+"B" - means the line comes before any line you want to select
+"S" - means that the line will become part of the new selection
+"A" - means the line comes after any line you want to select
 
-- The 'B' lines must be a verbatim copy of some lines that come before the selection lines you want to edit.
-- Skip the 'B' lines if you need to make an edit at the start of the content.
-- The 'S' lines must be a verbatim copy of all the lines you want to delete or replace from the input context.
-- There must be no 'S' lines if you want to insert new text without deleting any old text
-- The 'A' lines must be verbatim copy of some lines that come after the selection you want to edit
-- Skip the 'A' lines if you need to make an edit at the end of the content.
+IMPORTANT: You can create an empty selection if no lines are tagged with "S", which is useful for inserting new text between "B" and "A" lines.
+IMPORTANT: The "S", selection lines can not overlap with any previous selection lines
 
 This is designed so that you can use lots of unambiguous surrounding context to uniquely identify the lines to select.
-
-IMPORTANT: You must include three or more lines of 'B' context before the 'S' lines, unless you are editing at the start of the content.
-IMPORTANT: You must include three or more lines of 'A' context after the 'S' lines, unless you are editing at the end of the content.
-IMPORTANT: The 'S', selection lines can not overlap with any previous selection lines
 
 IMPORTANT: Consider the hierarchy of the input content when making large movements:
 - Aim to move to the nearest top-level item (such as a header or class definition or function name) before moving forwards to more-specific context.
 
-- **`lines`** (table): A multi-line table that must uniquely identify the next selection lines you want to edit
+- **`tagged_lines`** (table): A multi-line table that quotes and tags a verbatim sequence of, existing, input lines.
 - **Returns**: The `TextPatcher` object, allowing for method chaining. Errors if the lines, are not all found in the input.
+
+
+IMPORTANT: Always add a grounding comment that quotes the unpatched lines of interest from the input without any tags (including before and after context).
+
+IMPORTANT: The given lines must be a verbatim sequence of lines from the (unpatched) input content with no gaps.
+
+This API will concatenate all of the given lines and search for an exact match within the content passed to `TextPatcher.new()` before using the tags to update the selection.
+
+IMPORTANT: Remember to escape characters in the line if needed, to maintain valid Lua string literals.
+
+
 
 #### Example
 
 Replace a print statement so it says "Hello, world!"
 
 ```lua
+-- PATCH - Update print to say "Hello, world!", within this chunk:
+--
+-- ```
+--
+-- def some_function():
+--     print("Hello")
+--
+-- def some_other_function:
+-- ```
+
 patcher:select_next_lines({
     {"B", ""},
     {"B", "def some_function():"},
@@ -300,8 +341,26 @@ patcher:replace_selected(
 )
 ```
 
+### `TextPatcher:select_end()`
+
+Creates an empty selection that can be used to insert text at the end of the content
+
+IMPORTANT: Remember that the selection can only move forwards so `:select_end()` can only be used once, for the last patch.
+
+Use `:replace_selected()` afterwards to insert lines at the end, like:
+
+```lua
+-- Create an empty selection at the end of the script
+patcher:select_end()
+-- Add a blank line and a comment at the end of this Python script
+patcher:replace_selected([[
+
+# This is the end of this script
+]])
+```
+
 ### `TextPatcher:replace_selected(replacement)`
-Stages a patch that will replace the currently selected 'S' lines with the `replacement` lines.
+Stages a patch that will replace the currently selected ("S" tagged) lines with the `replacement` lines.
 
 "\n" represents one blank line.
 
@@ -309,12 +368,12 @@ Stages a patch that will replace the currently selected 'S' lines with the `repl
 
 When `replacement` is split into multiple lines, a trailing `\n` is optional for the last line, so "line1\nline2\n" and "line1\nline2" will both split into two lines.
 
-If you want the last line to be blank then you should add an extra trailing "\n", e.g. "line\nline2\n\n" will split into three lines and "\n\n" will split into a single empty line.
+If you want the last line to be blank then you should add an extra trailing "\n", e.g. "line1\nline2\n\n" will split into three lines and "\n\n" will split into a single empty line.
 
 Note: the input text is not modified on-the-fly, the patches are are recorded internally and only applied when `apply()` is called.
 
 - **`replacement`** (string): The text to insert.
-- **Returns**: The `TextPatcher` object for further chaining.
+- **Returns**: The `TextPatcher` object, allowing for method chaining.
 
 ### Coding Style
 
@@ -356,10 +415,46 @@ Stages a patch that will delete the currently selected, 'S' lines.
 Retrieves the final, modified content after all staged patches have been applied in sequence.
 - **Returns**: The final content as a string.
 
+### `TextPatcher` Grounding Comments
+
+It is strongly recommended to add grounding comments before each pair of select and replacement API calls that include a full quote of the chunk of input text that will be modified, like:
+
+```lua
+-- PATCH - Update print to say "Hello, world!", within this chunk:
+--
+-- ```
+--
+-- def some_function():
+--     print("Hello")
+--
+-- def some_other_function:
+-- ```
+
+patcher:select_next_lines({
+    {"B", ""},
+    {"B", "def some_function():"},
+    {"S", "    print(\"Hello\")"},
+    {"A", ""},
+    {"A", "def some_other_function:"},
+})
+
+patcher:replace_selected(
+[[
+    print("Hello, world!")
+]]
+)
+```
+
+The grounding comment should include surrounding the same surrounding context that will be passed to `:select_next_lines()`
+
+The only difference should be the addition of tags when calling `:select_next_lines()`
+
 
 ### `TextPatcher` Common Mistakes
 
-You MUST remember that the TextPatcher cursor can only move forwards, so you are required to define a sequence of non-overlapping patches. If you find you need to go backwards you will have to first `apply()` the changes for the current patcher and create a new `TextPatcher` for a second pass, but this is not recommended.
+You MUST remember that the TextPatcher selection can only move forwards, so you are required to define a sequence of non-overlapping patches. If you find you need to go backwards you will have to first `apply()` the changes for the current patcher and create a new `TextPatcher` for a second pass, but this is not recommended.
+
+You MUST remember that full sequence of tagged lines passed to `:select_next_lines(tagged_lines)` must match a verbatim match for a sequence of lines from the original content passed to `TextPatcher.new()`, with no gaps.
 
 
 ### Example: Inserting text at the start of a file
@@ -444,6 +539,19 @@ if __name__ == "__main__":
 local original_script = get_data_block("{{ example_namespace1 }}", "script.py")
 local patcher = TextPatcher.new(original_script)
 
+-- PATCH: Update print statement to say "Hello, world!", within this chunk:
+--
+-- ```
+-- # This is an example python script
+--
+-- def say_hello():
+--     print("Hello!")
+--
+-- def main():
+--     say_hello()
+-- ```
+
+
 -- Select the print statement we want to replace, and provide surrounding before/after context
 patcher:select_next_lines({
     {"B", "# This is an example python script"},
@@ -514,12 +622,12 @@ if __name__ == "__main__":
 local original_script = get_data_block("{{ example_namespace0 }}", "script.py")
 local patcher = TextPatcher.new(original_script)
 
--- Provide surrounding before/after context around the position we want to insert new text
+-- Quote the lines around the position we want to insert new text
+-- Tag lines before the insertion position with "B" and the lines after the insertion position with "A"
 patcher:select_next_lines({
     {"B", ""},
     {"B", "# This is an example python script"},
     {"B", ""},
-    -- No 'S' lines; empty selection marks insertion position
     {"A", "def say_hello():"},
     {"A", "    print(\"Hello!\")"},
     {"A", ""},
@@ -555,4 +663,58 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
+
+### Example: Inserting a comment at the end
+
+This example demonstrates how to use `select_end()` to insert text at the end of the content.
+
+**Original, input `script.py` block:**
+
+==== HEADER "script.py" ==== {{marker}}
+namespace: {{ example_namespace0 }}
+==== BEGIN "script.py" ==== {{marker}}
+#!/usr/bin/env python3
+
+def main():
+    print("Hello, world!")
+
+if __name__ == "__main__":
+    main()
+==== END "hello.py" ==== {{marker}}
+
+**SCRIPT block:**
+
+```lua
+local original_script = get_data_block("{{ example_namespace0 }}", "script.py")
+local patcher = TextPatcher.new(original_script)
+
+-- Jump to the end of the file and create an empty selection
+patcher:select_end()
+-- Insert a blank line and comment by replacing the empty selection at the end of the file
+patcher:replace_selected([[
+
+# This is an example Python script
+]])
+
+local new_script = patcher:apply()
+local commit = Commit.new("{{ example_namespace0 }}")
+commit:write_file("script.py", new_script, { mode = "0755" })
+commit:set_message([[Patch script.py to add a comment']])
+local response = Response.new("CHANGE")
+response:add_commit(commit)
+return response
+```
+
+**Resulting `script.py`:**
+```python
+#!/usr/bin/env python3
+
+def main():
+    print("Hello, world!")
+
+if __name__ == "__main__":
+    main()
+
+# This is an example Python script
 ```

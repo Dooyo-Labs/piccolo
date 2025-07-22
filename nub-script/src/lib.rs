@@ -429,6 +429,19 @@ fn load_nub_script<'gc>(ctx: piccolo::Context<'gc>) {
     );
     patcher_methods.set_field(
         ctx,
+        "select_end",
+        Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let patcher_ud: UserData = stack.consume(ctx)?;
+            let mut patcher = patcher_ud
+                .downcast_static::<RefCell<TextPatcher>>()?
+                .borrow_mut();
+            patcher.select_end()?;
+            stack.replace(ctx, patcher_ud);
+            Ok(CallbackReturn::Return)
+        }),
+    );
+    patcher_methods.set_field(
+        ctx,
         "replace_selected",
         Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (patcher_ud, replacement): (UserData, Option<PiccoloString>) =
@@ -678,6 +691,13 @@ impl TextPatcher {
 
     fn end_selection(&mut self) -> Result<(), ScriptError> {
         self.selection = (self.selection.0, self.cursor);
+        Ok(())
+    }
+
+    fn select_end(&mut self) -> Result<(), ScriptError> {
+        let n_lines = self.original_lines.len();
+        self.selection = (n_lines, n_lines);
+        self.cursor = n_lines;
         Ok(())
     }
 

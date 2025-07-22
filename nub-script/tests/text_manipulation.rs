@@ -312,6 +312,67 @@ return response
 }
 
 #[test(tokio::test)]
+async fn test_insert_at_end() -> Result<()> {
+    const INPUT_BLOCK: &str = r#"-- line 1
+-- line 2
+-- line 3
+-- line 4
+-- line 5
+"#;
+
+    const SCRIPT: &str = r#"
+local patcher = TextPatcher.new(get_data_block("repo.namespace", "lines.txt"))
+
+patcher:select_end()
+
+patcher:replace_selected(
+[[
+-- line 6
+]])
+
+local new_content = patcher:apply()
+
+local response = Response.new("CHANGE")
+local commit = Commit.new("repo.namespace")
+commit:write_file("lines.txt", new_content)
+commit:set_message("Apply text manipulations")
+response:add_commit(commit)
+return response
+"#;
+
+    let mut nub = NubScript::default();
+    nub.add_data_block_content("repo.namespace", "lines.txt", INPUT_BLOCK);
+
+    let response: Response = match nub
+        .eval(SCRIPT, || async { ControlFlow::Continue(()) })
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("Error during evaluation: {:#}", e);
+            return Err(e.into());
+        }
+    };
+    let Response::Change { commits } = response else {
+        panic!("Expected a Change response, got: {:?}", response);
+    };
+    let commit = &commits[0];
+    let change = &commit.files_created[0];
+    println!("Final content:\n{}", change.content);
+    const EXPECTED_OUTPUT: &str = r#"-- line 1
+-- line 2
+-- line 3
+-- line 4
+-- line 5
+-- line 6
+"#;
+
+    assert_eq!(change.content, EXPECTED_OUTPUT);
+
+    Ok(())
+}
+
+#[test(tokio::test)]
 async fn test_pattern_not_found() {
     const SOURCE_RS: &str = "fn main() {}";
     const SCRIPT: &str = r#"
