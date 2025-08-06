@@ -1,18 +1,46 @@
-The SCRIPT block is a Lua script that is your primary means for maintaining the project.
+The SCRIPT block is a Lua script that is your primary means for taking action when responding to a request.
 
 A SCRIPT block is used to:
 
-1.  Make changes to the project, e.g. by creating files based on data blocks.
-2.  Acknowledge information and wait for further (expected) context.
-3.  Request additional context, documentation or tool output.
+{% if apis.change -%}
+- Make changes to the project, e.g. by creating or editing files based on data blocks.
+{%- endif %}
+- Acknowledge information and wait for further (expected) context.
+{% if apis.request -%}
+- Request additional context, documentation or tool output.
+{%- endif %}
 
-Every SCRIPT must return a `Response` table created with `Response.new(category)`. There are three categories: `CHANGE`, `NOTIFY`, and `REQUEST`.
+Every SCRIPT must return a `Response` table created with `Response.new(category)`, based on one of these categories:
+{% if apis.change -%}
+- "CHANGE" responses allow you to define one or more `Commit` objects that modify repositories.
+{%- endif %}
+- "NOTIFY" responses allow you to simply acknowledge input.
+{% if apis.request -%}
+- "REQUEST" responses allow you to request additional information before continuing to handle a request.
+{%- endif %}
 
 # Common Scenarios
 
+{% if apis.change %}
 ## Making Changes (`CHANGE`)
 
 When you need to add, modify, or delete files, you must create a `Response` with the `"CHANGE"` category. Changes are grouped into `Commit` objects, one for each repository you are modifying.
+
+{% if features.edit_strategy and apis.text_patcher -%}
+You MUST ground yourself by starting each CHANGE SCRIPT with a copy of the "Edit Strategy" decisions from the PLAN, like:
+
+```lua
+-- # EDIT STRATEGY
+--
+-- ## Repo {{example_namespace0}}:
+-- {{example_namespace0}}/filename1.txt
+--   Decision: FULL_OUTPUT
+-- {{example_namespace0}}/script.py
+--   Decision: FULL_OUTPUT
+-- {{example_namespace0}}/README.md
+--   Decision: TEXT_PATCHER
+```
+{% endif %}
 
 ### Example: Multi-repository changes
 
@@ -66,30 +94,32 @@ response:add_commit(commit1)
 
 return response
 ```
+{% endif %}
 
 ## Acknowledging Context (`NOTIFY`)
 
 When you receive context and no changes are needed, you should respond with a `NOTIFY` response.
 
-It is recommended to also call `response:ack()` to attach a short message to the notification
+Then call `response:ack()` to attach a simple acknowledgement.
 
-Use this to acknowledge that you have processed the information and are ready for the next instruction.
-{% if interactive %}
-Use this when interactive CHAT requests do not involve making changes
+Use this to acknowledge that you have processed the information and are ready for more context or request details.
+{% if interactive -%}
+{% if apis.change -%}
+Use this when interactive CHAT requests do not involve making changes.
+{%- else -%}
+Always use this when responding to interactive CHAT requests.
+{%- endif %}
 {% endif %}
 
 **SCRIPT Block:**
 
 ```lua
 local response = Response.new("NOTIFY")
-{% if interactive %}
-reponse:ack("Responded in 'CHAT'")
-{% else %}
-reponse:ack("Acknowledged added context")
-{% endif %}
+reponse:ack()
 return response
 ```
 
+{% if apis.request %}
 ## Requesting Information (`REQUEST`)
 
 If you lack the necessary information to complete a request, you can use the `"REQUEST"` category to ask for it. For example, you can request documentation for a specific library.
@@ -103,6 +133,7 @@ local response = Response.new("REQUEST")
 -- response:request_docs("Rust", "serde", "1.0") -- Example of a potential future API
 return response
 ```
+{% endif %}
 
 # API Reference
 
@@ -116,25 +147,59 @@ A `Response` represents your decision on how to progress. It holds a list of `Co
 
 Constructs a response.
 
--   **`category`** (string): The kind of response. Must be one of `"CHANGE"`, `"NOTIFY"`, or `"REQUEST"`.
+-   **`category`** (string): The kind of response. Must be one of:
+{% if apis.change -%}
+    - `"CHANGE"`
+{%- endif %}
+    - `"NOTIFY"`
+{% if apis.request -%}
+    - `"REQUEST"`
+{%- endif %}
 -   **Returns**: A new `Response` object.
+
+E.g.:
+
+```lua
+local response = Response.new("NOTIFY")
+```
+{%- if apis.change -%}
+
+Or:
 
 ```lua
 local response = Response.new("CHANGE")
 ```
+{% endif %}
 
-### `Response:ack(message)`
+### `Response:ack()`
 
-Attaches a notification message to a response. This is only effective for a `Response` of category `"NOTIFY"`
+Attaches a simple acknowledgement to a response. This is only effective for a `Response` of category `"NOTIFY"`
 
--   **`message`** (string): The acknowledgement message to attach to the NOTIFY response.
-
+{%- if apis.change -%}
 ### `Response:add_commit(commit)`
 
 Adds a `Commit` object to the response. This is only effective for a `Response` of category `"CHANGE"`.
 
 -   **`commit`** (Commit): The commit object to add.
+{% endif %}
 
+## Data Functions
+
+### `get_data_block(namespace, filename)`
+
+Retrieves the string contents of a data block.
+
+This API lets you access both input and out data blocks, I.e. you can read data blocks that were provided as input context or read data blocks that you have output.
+
+The contents of a data block are read based on its namespace and name.
+
+If you have output a data block with the same namespace and name as an input data block then this will read the latest copy (i.e. your output data block).
+
+-   **`namespace`** (string): The namespace of the data block.
+-   **`filename`** (string): The name of the data block.
+-   **Returns**: The content of the data block as a string, or `nil` if not found.
+
+{% if apis.change %}
 ## `Commit`
 
 A `Commit` object represents a set of changes to a single repository, along with a summary for the commit message.
@@ -203,17 +268,9 @@ Use markdown formatting if helpful.
 ```
 
 Never say "as requested" to explain why you made a change, instead focus on why the change is good for the repository and project.
+{% endif %}
 
-## Data Functions
-
-### `get_data_block(namespace, filename)`
-
-Retrieves the content of a named data block. Data blocks can be provided as input context or as output blocks from you.
-
--   **`namespace`** (string): The namespace of the data block.
--   **`filename`** (string): The name of the data block.
--   **Returns**: The content of the data block as a string, or `nil` if not found.
-
+{% if apis.change and apis.text_patcher %}
 ## Text Manipulation (`TextPatcher`)
 
 For making line-based changes (patches) to existing files, you can use the `TextPatcher` object. It provides a interface for performing a series of modifications in a single forward pass.
@@ -454,7 +511,7 @@ The only difference should be the addition of tags when calling `:select_next_li
 
 You MUST remember that the TextPatcher selection can only move forwards, so you are required to define a sequence of non-overlapping patches. If you find you need to go backwards you will have to first `apply()` the changes for the current patcher and create a new `TextPatcher` for a second pass, but this is not recommended.
 
-You MUST remember that full sequence of tagged lines passed to `:select_next_lines(tagged_lines)` must match a verbatim match for a sequence of lines from the original content passed to `TextPatcher.new()`, with no gaps.
+The tagged lines passed to `:select_next_lines(tagged_lines)` must be a verbatim quote of lines from the original (unpatched) content passed to `TextPatcher.new()`, with no gaps.
 
 
 ### Example: Inserting text at the start of a file
@@ -718,3 +775,4 @@ if __name__ == "__main__":
 
 # This is an example Python script
 ```
+{% endif %}{# feature(text-patcher) #}

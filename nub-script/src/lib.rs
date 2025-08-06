@@ -248,16 +248,17 @@ fn load_nub_script<'gc>(ctx: piccolo::Context<'gc>) {
         ctx,
         "ack",
         Callback::from_fn(&ctx, |ctx, _, mut stack| {
-            let (response_ud, notification): (UserData, PiccoloString) = stack.consume(ctx)?;
+            let (response_ud, notification): (UserData, Option<PiccoloString>) =
+                stack.consume(ctx)?;
             let mut response = response_ud
                 .downcast_static::<RefCell<GcResponse>>()?
                 .borrow_mut();
-            response.notification = Some(
-                notification
-                    .to_str()
-                    .map_err(|e| ScriptError::BadString(e.to_string()))?
-                    .to_string(),
-            );
+            response.notification = notification
+                .map(|s| s.to_str())
+                .transpose()
+                .map_err(|e| ScriptError::BadString(e.to_string()))?
+                .map(|s| s.to_string());
+
             Ok(CallbackReturn::Return)
         }),
     );
